@@ -42,17 +42,27 @@ await channel.consume(Queue, async (msg) => {
       console.log("here we are...")
       const key = mess.key;
 
-    const analysisData = await client.get(key);
-    const candles = JSON.parse(analysisData);
+   const analysisData = await client.get(key);
+// ADD HERE
+if (!analysisData) {
+  console.error("No data in Redis for key:", key);
+  channel.ack(msg);
+  return;
+}
+const candles = JSON.parse(analysisData);
+if (!candles || candles.length === 0) {
+  console.error("Empty candles for key:", key);
+  channel.ack(msg);
+  return;
+}
 
-    function calculateEMA(candles, period = 2) {
+    function calculateEMA(candles, period = 3) {
       const k = 2 / (period + 1);
-      let ema = candles[0].close; // seed with first close
+      let ema = candles[0].close; // start with the first close price
 
       for (let i = 1; i < candles.length; i++) {
         ema = candles[i].close * k + ema * (1 - k);
       }
-
       return ema;
     }
 
