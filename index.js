@@ -9,6 +9,8 @@ dotenv.config();
 const client = createClient({
   url: process.env.REDIS_KEY
 });
+client.on('error', err => console.log('Redis Client Error', err));
+await client.connect();
 
 const rabbitmqUrl = process.env.RABITMQ_KEY;
 
@@ -22,7 +24,7 @@ async function connectRabbitMQ() {
   }
 }
 
-let Queue = "fin_queue";
+let Queue = "ema_queue";
 
 let conn = await amqplib.connect(rabbitmqUrl);
 const channel = await conn.createChannel();
@@ -30,9 +32,43 @@ const channel = await conn.createChannel();
 await channel.assertQueue(Queue, { durable: true });
 await channel.assertExchange("amq.direct", "direct", { durable: true });
 
-await channel.consume(Queue, (msg) => {
+await channel.consume(Queue, async (msg) => {
+
   if (msg !== null) {
-    console.log("Received message:", msg.content.toString());
+    const mess = JSON.parse(msg.content.toString());
+    console.log("Received message:", mess);
+
+    if (mess.type === "ema") {
+      console.log("here we are...")
+      const key = mess.key;
+
+    const analysisData = await client.get(key);
+    const candles = JSON.parse(analysisData);
+
+    function calculateEMA(candles, period = 2) {
+      const k = 2 / (period + 1);
+      let ema = candles[0].close; // seed with first close
+
+      for (let i = 1; i < candles.length; i++) {
+        ema = candles[i].close * k + ema * (1 - k);
+      }
+
+      return ema;
+    }
+
+    const ema = calculateEMA(candles);
+ channel.sendToQueue(
+        "response_queue",
+        Buffer.from(JSON.stringify({ type: mess.type, result: ema })),
+        { correlationId: msg.properties.correlationId }  // ← just this line
+        );      
+    
+
+    } else {
+      console.log("Received message:", mess);
+    }
+
+
     channel.ack(msg);
   }
 }, { noAck: false }); 
@@ -40,7 +76,7 @@ await channel.consume(Queue, (msg) => {
 client.on('error', err => console.log('Redis Client Error', err));
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 app.use(express.json());
 
@@ -58,7 +94,9 @@ app.use((req, res) => {
 });
 
 // Error handler
-app.use((err, req, res, next) => {
+app.use(async  (err, req, res, next) => {
+
+    await connectRabbitMQ();
   console.error(err.stack);
   res.status(500).json({ error: "Internal server error" });
 });
